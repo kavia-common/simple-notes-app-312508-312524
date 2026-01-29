@@ -1,27 +1,22 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import NotesList from "./components/NotesList";
 import NoteEditorModal from "./components/NoteEditorModal";
 import ConfirmDialog from "./components/ConfirmDialog";
+import {
+  createNote,
+  deleteNote,
+  listNotes,
+  updateNote,
+} from "./api/notes";
 
-/**
- * Notes are kept in local state for now. API integration will replace these handlers
- * in a subsequent step.
- */
+/** Local fallback if backend is unavailable (keeps UI usable). */
 const seedNotes = [
   {
     id: "n1",
     title: "Welcome",
     content:
-      "This is a lightweight notes app UI. In the next step, these notes will be loaded from the backend. You can create, edit, and delete notes in the meantime.",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-  {
-    id: "n2",
-    title: "Tip",
-    content:
-      "Click a note to edit it. Use the Delete action to remove it (with confirmation). Titles are required; content is optional.",
+      "This is a lightweight notes app UI. Notes will load from the backend when available. You can create, edit, and delete notes.",
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   },
@@ -30,13 +25,13 @@ const seedNotes = [
 // PUBLIC_INTERFACE
 function App() {
   /** UI state */
-  const [notes, setNotes] = useState(seedNotes);
+  const [notes, setNotes] = useState([]);
   const [activeNoteId, setActiveNoteId] = useState(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState("create"); // "create" | "edit"
 
-  /** Placeholder API state for next step */
-  const [isLoading, setIsLoading] = useState(false);
+  /** API state */
+  const [isLoading, setIsLoading] = useState(false); // for list + any mutation
   const [errorMessage, setErrorMessage] = useState("");
 
   /** Delete confirmation state */
@@ -46,8 +41,30 @@ function App() {
   });
 
   const activeNote = useMemo(() => {
-    return notes.find((n) => n.id === activeNoteId) || null;
+    return notes.find((n) => String(n.id) === String(activeNoteId)) || null;
   }, [notes, activeNoteId]);
+
+  const loadNotes = async () => {
+    setErrorMessage("");
+    setIsLoading(true);
+    try {
+      const data = await listNotes();
+      setNotes(Array.isArray(data) ? data : []);
+    } catch (e) {
+      // If backend is down, keep UX friendly by showing a message + seed content.
+      setErrorMessage(
+        `Could not load notes from backend. ${e?.message ? `(${e.message})` : ""}`.trim()
+      );
+      setNotes(seedNotes);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadNotes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // PUBLIC_INTERFACE
   const openCreate = () => {
@@ -78,27 +95,18 @@ function App() {
   };
 
   /**
-   * Placeholder save handler.
-   * Next step: replace the internals with API calls and optimistic updates.
+   * Save handler: create or update via API.
    */
   // PUBLIC_INTERFACE
   const handleSave = async ({ title, content }) => {
     setErrorMessage("");
 
-    // Placeholder async boundary to make it easy to swap to API.
     try {
       setIsLoading(true);
 
       if (editorMode === "create") {
-        const now = new Date().toISOString();
-        const newNote = {
-          id: `local_${Date.now()}`,
-          title,
-          content,
-          created_at: now,
-          updated_at: now,
-        };
-        setNotes((prev) => [newNote, ...prev]);
+        const created = await createNote({ title, content });
+        setNotes((prev) => [created, ...prev]);
         setIsEditorOpen(false);
         return;
       }
@@ -108,40 +116,45 @@ function App() {
         return;
       }
 
+      // Ensure we use numeric id when it comes from API; seed notes are string ids
+      // and won't be updatable against backend.
+      const updated = await updateNote(activeNote.id, { title, content });
       setNotes((prev) =>
-        prev.map((n) =>
-          n.id === activeNote.id
-            ? { ...n, title, content, updated_at: new Date().toISOString() }
-            : n
-        )
+        prev.map((n) => (String(n.id) === String(updated.id) ? updated : n))
       );
       setIsEditorOpen(false);
     } catch (e) {
-      setErrorMessage("Something went wrong while saving. Please try again.");
+      setErrorMessage(
+        `Something went wrong while saving. ${e?.message ? `(${e.message})` : ""}`.trim()
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * Placeholder delete handler.
-   * Next step: replace with API call; keep confirm flow.
+   * Delete handler: delete via API (keeps confirm flow).
    */
   const confirmDelete = async () => {
     if (!confirmState.noteId) return;
 
     setErrorMessage("");
+    const toDeleteId = confirmState.noteId;
+
     try {
       setIsLoading(true);
-      const toDeleteId = confirmState.noteId;
-      setNotes((prev) => prev.filter((n) => n.id !== toDeleteId));
 
-      if (activeNoteId === toDeleteId) {
+      await deleteNote(toDeleteId);
+
+      setNotes((prev) => prev.filter((n) => String(n.id) !== String(toDeleteId)));
+      if (String(activeNoteId) === String(toDeleteId)) {
         setActiveNoteId(null);
       }
       closeConfirm();
     } catch (e) {
-      setErrorMessage("Failed to delete the note. Please try again.");
+      setErrorMessage(
+        `Failed to delete the note. ${e?.message ? `(${e.message})` : ""}`.trim()
+      );
     } finally {
       setIsLoading(false);
     }
